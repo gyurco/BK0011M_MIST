@@ -30,17 +30,18 @@ module bk0011m
    output  [5:0] VGA_B,
    output        VGA_HS,
    output        VGA_VS,
-	 
+
    output        LED,
 
    output        AUDIO_L,
    output        AUDIO_R,
 
-   input         SPI_SCK,
-   output        SPI_DO,
+   inout         SPI_DO,
    input         SPI_DI,
+   input         SPI_SCK,
    input         SPI_SS2,
    input         SPI_SS3,
+   input         SPI_SS4,
    input         CONF_DATA0,
 
    output [12:0] SDRAM_A,
@@ -136,24 +137,57 @@ wire        sd_mounted;
 `include "build_id.v"
 localparam CONF_STR = 
 {
-	"BK0011M;BINDSK;",
-	"S3,VHD;",
+	"BK0011M;;",
+	"F,BINDSK,FDD(A);",
+	"S0U,VHD,HDD(A);",
 	"O78,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%;",
 	"O1,CPU Speed,3MHz/4MHz,6MHz/8MHz;",
 	"O56,Model,BK0011M & DSK,BK0010 & DSK,BK0011M,BK0010;",
 	"T2,Reset & Unload Disk;",
-	"V,v2.50.",`BUILD_DATE
+	"V,v2.60.",`BUILD_DATE
 };
 
-user_io #(.STRLEN(($size(CONF_STR)>>3))) user_io
+user_io #(.STRLEN(($size(CONF_STR)>>3)), .SD_IMAGES(1)) user_io
 (
-	.*,
-	.conf_str(CONF_STR),
+	.conf_str	(CONF_STR),
+	.clk_sys		(clk_sys),
+	.clk_sd		(clk_sys),
 
-	// unused
-	.img_size(),
+	.SPI_CLK		(SPI_SCK),
+	.SPI_SS_IO	(CONF_DATA0),
+	.SPI_MISO	(SPI_DO),
+	.SPI_MOSI	(SPI_DI),
+
+	.joystick_0	(joystick_0),
+	.joystick_1	(joystick_1),
 	.joystick_analog_0(),
-	.joystick_analog_1()
+	.joystick_analog_1(),
+	.buttons		(buttons),
+	.switches	(switches),
+	.scandoubler_disable	(scandoubler_disable),
+	.ypbpr		(ypbpr),
+
+	.status		(status),
+
+	.sd_conf				(sd_conf),
+	.sd_sdhc				(sd_sdhc),
+	.img_mounted			(sd_mounted),
+	.img_size			(),
+	.sd_lba				(sd_lba),
+	.sd_rd				(sd_rd),
+	.sd_wr				(sd_wr),
+	.sd_ack				(sd_ack),
+	.sd_ack_conf		(sd_ack_conf),
+	.sd_buff_addr		(sd_buff_addr),
+	.sd_dout				(sd_buff_dout),
+	.sd_din				(sd_buff_din),
+	.sd_dout_strobe	(sd_buff_wr),
+
+	.ps2_kbd_clk		(ps2_kbd_clk),
+	.ps2_kbd_data		(ps2_kbd_data),
+	.ps2_mouse_clk		(ps2_mouse_clk),
+	.ps2_mouse_data	(ps2_mouse_data)
+//	.ps2_caps_led		(ps2_caps_led)
 );
 
 assign LED = !dsk_copy;
@@ -486,6 +520,18 @@ wire [15:0] dsk_copy_dout;
 wire        dsk_copy_we;
 wire        dsk_copy_rd;
 
-disk disk(.*, .reset(cpu_dclo), .reset_full(status[2]), .bus_ack(disk_ack));
+disk disk(
+	.*,
+
+	.SPI_SCK		(SPI_SCK),
+	.SPI_SS2		(SPI_SS2),
+	.SPI_SS4		(SPI_SS4),
+	.SPI_DO		(SPI_DO),
+	.SPI_DI		(SPI_DI),
+
+	.reset(cpu_dclo),
+	.reset_full(status[2]),
+	.bus_ack(disk_ack)
+);
 
 endmodule

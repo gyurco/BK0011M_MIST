@@ -14,8 +14,9 @@ module disk
 
 	input         SPI_SCK,
 	input         SPI_SS2,
+	input         SPI_SS4,
 	input         SPI_DI,
-
+	inout         SPI_DO,
 
 	input  [15:0] bus_din,
 	input  [15:0] bus_addr,
@@ -101,15 +102,17 @@ always @(posedge clk_sys) begin
 	end
 end
 
+wire [24:0] down_addr = ioctl_addr + ((ioctl_index == 8'd0) ? 25'h0E0000 : (ioctl_index == 8'd1) ? 25'h100000 : 25'h120000 );
+
 assign dsk_copy        = ioctl_download | processing;
-assign dsk_copy_we     = ioctl_download ? ioctl_we   : copy_we;
+assign dsk_copy_we     = ioctl_download ? ioctl_wr   : copy_we;
 assign dsk_copy_rd     = ioctl_download ? 1'b0       : copy_rd;
-assign dsk_copy_addr   = ioctl_download ? ioctl_addr : copy_addr;
+assign dsk_copy_addr   = ioctl_download ? down_addr  : copy_addr;
 assign dsk_copy_dout   = ioctl_download ? ioctl_dout : copy_dout;
 assign dsk_copy_virt   = ioctl_download ? 1'b0       : copy_virt;
 
 wire        ioctl_download;
-wire        ioctl_we;
+wire        ioctl_wr;
 wire [24:0] ioctl_addr;
 wire [15:0] ioctl_dout;
 wire  [7:0] ioctl_index;
@@ -122,10 +125,10 @@ reg  [15:0] tape_len;
 
 always @(posedge clk_sys) begin
 	reg old_we;
-	old_we <= ioctl_we;
-	if(~old_we & ioctl_we) begin
-		if(ioctl_addr == 25'h100000) tape_addr <= {ioctl_dout[15:1], 1'b0};
-		if(ioctl_addr == 25'h100002) tape_len  <= (ioctl_dout+1'd1) & ~16'd1;
+	old_we <= ioctl_wr;
+	if(~old_we & ioctl_wr) begin
+		if(down_addr == 25'h100000) tape_addr <= {ioctl_dout[15:1], 1'b0};
+		if(down_addr == 25'h100002) tape_len  <= (ioctl_dout+1'd1) & ~16'd1;
 	end
 end
 
@@ -137,9 +140,7 @@ always @(posedge clk_sys) begin
 	if(!old_download & ioctl_download & bk0010 & (ioctl_index == 1)) reset_req <=1;
 
 	if(old_download & !ioctl_download) begin
-
 		reset_req <= 0;
-
 		case(ioctl_index)
 			1: begin 
 					in_range  <= 0;
@@ -158,7 +159,21 @@ always @(posedge clk_sys) begin
 	if(in_range & (bus_addr[15:13] < 3'b101) & bk0010_stub) bk0010_stub <=0; 
 end
 
-data_io data_io (.*);
+data_io #(.DOUT_16(1'b1)) data_io (
+	.clk_sys		(clk_sys),
+
+	.SPI_SCK		(SPI_SCK),
+	.SPI_SS2		(SPI_SS2),
+	.SPI_SS4		(SPI_SS4),
+	.SPI_DI		(SPI_DI),
+	.SPI_DO		(SPI_DO),
+
+	.ioctl_download	(ioctl_download),
+	.ioctl_index		(ioctl_index),
+	.ioctl_wr			(ioctl_wr),
+	.ioctl_addr			(ioctl_addr),
+	.ioctl_dout			(ioctl_dout)
+);
 
 //Allow write for stop/start disk motor and extended memory mode.
 wire       sel130  = bus_sync && (bus_addr[15:1] == (16'o177130 >> 1)) && bus_wtbt[0];

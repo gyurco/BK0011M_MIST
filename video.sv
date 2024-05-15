@@ -21,21 +21,16 @@ module video
 	input         bk0010,
 	input         color_switch,
 	input         bw_switch,
-	input         scandoubler_disable,
-	input         ypbpr,
-	input   [1:0] scale,
-
-	// OSD bus
-	input         SPI_SCK,
-	input         SPI_SS3,
-	input         SPI_DI,
 
 	// Video signals
-	output  [5:0] VGA_R,
-	output  [5:0] VGA_G,
-	output  [5:0] VGA_B,
-	output        VGA_VS,
-	output        VGA_HS,
+	output  [1:0] R,
+	output        G,
+	output        B,
+	output reg    HSync,
+	output reg    VSync,
+	output        HBlank,
+	output reg    VBlank,
+
 	output [13:0] vram_addr,
 	input  [15:0] vram_data,
 
@@ -59,12 +54,10 @@ assign vram_addr = {screen_bank, vcr, hc[8:4]};
 reg  [9:0] hc;
 reg  [8:0] vc;
 reg  [7:0] vcr;
+reg  [7:0] hbr;
 
 reg  [2:0] blank_mask;
-reg  HSync;
-reg  VSync;
 
-reg  mode512;
 always @(posedge clk_sys) begin
 	reg  col_mod;
 
@@ -84,7 +77,6 @@ always @(posedge clk_sys) begin
 			HSync <= 1;
 			if(vc == 276) begin
 				VSync <= 1;
-				mode512 <= ~(color & hq2x);
 			end
 			if(vc == 280) VSync <= 0;
 		end
@@ -97,10 +89,13 @@ always @(posedge clk_sys) begin
 	end
 
 	if(ce_12mn) begin
+		VBlank <= vc[8];
 		dotm <= hc[0];
 		if(!hc[0]) begin
 			dots <= {2'b00, dots[15:2]};
+			hbr <= {1'b0, hbr[7:1]};
 			if(!hc[9] && !(vc[8:6] & {1'b1, {2{~full_screen}}}) && !hc[3:1]) dots <= vram_data;
+			if(!hc[9] && !hc[3:1]) hbr <= 8'hFF;
 		end
 	end
 end
@@ -117,28 +112,9 @@ wire [15:0] palettes[16] = '{
 };
 wire [15:0] comp = palettes[pal] >> {dotc[0],dotc[1], 2'b00};
 
-wire [1:0] R;
-wire G, B;
+
 assign {R[1], B, G, R[0]} = color ? comp[3:0] : {4{dotc[dotm]}};
-
-wire hq2x = (scale == 1);
-
-video_mixer #(.LINE_LENGTH(768), .HALF_DEPTH(1)) video_mixer
-(
-	.*,
-	.ce_pix(ce_12mp),
-	.ce_pix_actual(ce_12mp & (mode512 | ~dotm)),
-
-	.scanlines(scandoubler_disable ? 2'b00 : {scale == 3, scale == 2}),
-
-	.ypbpr_full(1),
-	.line_start(0),
-	.mono(0),
-
-	.R({R, R[1]}),
-	.G({3{G}}),
-	.B({3{B}})
-);
+assign HBlank = ~hbr[0];
 
 ///////////////////////////////////////////////////////////////////////////////////////
 

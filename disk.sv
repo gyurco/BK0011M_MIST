@@ -12,12 +12,6 @@ module disk
 	output reg    reset_req,
 	output reg    bk0010_stub,
 
-	input         SPI_SCK,
-	input         SPI_SS2,
-	input         SPI_SS4,
-	input         SPI_DI,
-	inout         SPI_DO,
-
 	input  [15:0] bus_din,
 	input  [15:0] bus_addr,
 	input         bus_sync,
@@ -34,33 +28,35 @@ module disk
 	output        dsk_copy_we,
 	output        dsk_copy_rd,
 
-	output [31:0] sd_lba,
-	output reg    sd_rd,
-	output reg    sd_wr,
+	output    [31:0] sd_lba,
+	output reg [2:0] sd_rd,
+	output reg [2:0] sd_wr,
 
 	input         sd_ack,
-	input         sd_ack_conf,
 	input   [8:0] sd_buff_addr,
 	input   [7:0] sd_buff_dout,
 	output  [7:0] sd_buff_din,
 	input         sd_buff_wr,
 
-	output        sd_conf,
-	output        sd_sdhc,
-	input         sd_mounted
+	input         img_readonly,
+	input   [2:0] img_mounted,
+	input  [31:0] img_size,
+
+	input         ioctl_download,
+	input         ioctl_wr,
+	input  [24:0] ioctl_addr,
+	input  [15:0] ioctl_dout,
+	input   [7:0] ioctl_index
 );
 
-assign sd_conf = 1'b0;
-assign sd_sdhc = 1'b1;
 assign sd_lba  = conf ? 0 : lba;
 
-reg   [7:0] hdd_hdr[4:0];
-wire [31:0] hdd_sig = {hdd_hdr[0],hdd_hdr[1],hdd_hdr[2],hdd_hdr[3]};
-wire  [7:0] hdd_ver = hdd_hdr[4];
+reg [31:0] hdd_sig;
+reg  [7:0] hdd_ver;
 
 wire [31:0] hdr_out;
 reg   [6:0] hdr_addr;
-sector_b2d sector_hdr
+sector_w2d sector_hdr
 (
 	.clock(clk_sys),
 	.data(sd_buff_dout),
@@ -71,7 +67,7 @@ sector_b2d sector_hdr
 );
 
 wire [15:0] bk_ram_out;
-sector_b2w sector_rd
+sector_w2w sector_rd
 (
 	.clock(clk_sys),
 	.data(sd_buff_dout),
@@ -84,7 +80,7 @@ sector_b2w sector_rd
 reg  [15:0] bk_data_wr;
 reg         bk_wr;
 wire  [7:0] sd_ram_out;
-sector_w2b sector_wr
+sector_w2w sector_wr
 (
 	.clock(clk_sys),
 	.data(bk_data_wr),
@@ -97,12 +93,21 @@ sector_w2b sector_wr
 always @(posedge clk_sys) begin
 	reg old_wr;
 	old_wr <= sd_buff_wr;
-	if(sd_ack & ~old_wr & sd_buff_wr) begin
-		if(conf && (sd_buff_addr < 5)) hdd_hdr[sd_buff_addr] <= sd_buff_dout;
+	if(sd_ack & ~old_wr & sd_buff_wr & conf) begin
+		case(sd_buff_addr)
+			0: hdd_sig[31:24] <= sd_buff_dout[7:0];
+			1: hdd_sig[23:16] <= sd_buff_dout[7:0];
+			2: hdd_sig[15:8]  <= sd_buff_dout[7:0];
+			3: hdd_sig[7:0]   <= sd_buff_dout[7:0];
+			4: hdd_ver        <= sd_buff_dout[7:0];
+		endcase
 	end
 end
 
-wire [24:0] down_addr = ioctl_addr + ((ioctl_index == 8'd0) ? 25'h0E0000 : (ioctl_index == 8'd1) ? 25'h100000 : 25'h120000 );
+reg [31:0] disk_size[2] = '{0,0};
+reg  [1:0] disk_readonly = 0;
+
+wire [24:0] down_addr = ioctl_addr + ((ioctl_index) ? 25'h100000 : 25'h0E0000);
 
 assign dsk_copy        = ioctl_download | processing;
 assign dsk_copy_we     = ioctl_download ? ioctl_wr   : copy_we;
@@ -110,15 +115,6 @@ assign dsk_copy_rd     = ioctl_download ? 1'b0       : copy_rd;
 assign dsk_copy_addr   = ioctl_download ? down_addr  : copy_addr;
 assign dsk_copy_dout   = ioctl_download ? ioctl_dout : copy_dout;
 assign dsk_copy_virt   = ioctl_download ? 1'b0       : copy_virt;
-
-wire        ioctl_download;
-wire        ioctl_wr;
-wire [24:0] ioctl_addr;
-wire [15:0] ioctl_dout;
-wire  [7:0] ioctl_index;
-
-reg         fdd_ready = 0;
-reg  [24:0] fdd_size = 0;
 
 reg  [15:0] tape_addr;
 reg  [15:0] tape_len;
@@ -146,34 +142,12 @@ always @(posedge clk_sys) begin
 					in_range  <= 0;
 					bk0010_stub <= bk0010;
 				end
-
-			'h41: begin 
-					fdd_ready <= 1;
-					fdd_size  <= ioctl_addr - 25'h120000;
-				end
 		endcase
 	end
 
-	if(reset_full) fdd_ready <= 0;
 	if(bus_addr[15:13] == 3'b101) in_range <=1;
 	if(in_range & (bus_addr[15:13] < 3'b101) & bk0010_stub) bk0010_stub <=0; 
 end
-
-data_io #(.DOUT_16(1'b1)) data_io (
-	.clk_sys		(clk_sys),
-
-	.SPI_SCK		(SPI_SCK),
-	.SPI_SS2		(SPI_SS2),
-	.SPI_SS4		(SPI_SS4),
-	.SPI_DI		(SPI_DI),
-	.SPI_DO		(SPI_DO),
-
-	.ioctl_download	(ioctl_download),
-	.ioctl_index		(ioctl_index),
-	.ioctl_wr			(ioctl_wr),
-	.ioctl_addr			(ioctl_addr),
-	.ioctl_dout			(ioctl_dout)
-);
 
 //Allow write for stop/start disk motor and extended memory mode.
 wire       sel130  = bus_sync && (bus_addr[15:1] == (16'o177130 >> 1)) && bus_wtbt[0];
@@ -248,8 +222,6 @@ typedef enum
 	ST_HR, ST_HR2, ST_HR3, ST_HR4, ST_HR5,
 	ST_HW, ST_HW2, ST_HW3, ST_HW4, ST_HW5, ST_HW6, ST_HW7, ST_HW8, ST_HW9,
 	
-	ST_FR,
-	
 	ST_BIN, ST_BIN2, ST_BIN3, ST_BIN4, ST_BIN5,
 
 	ST_RES, ST_RES2, ST_RES3,
@@ -257,18 +229,26 @@ typedef enum
 
 } io_state_t;
 
+io_state_t io_state, io_cp_ret, io_rw_ret, io_state_n, io_cp_ret_n, io_rw_ret_n;
+
 always @(posedge clk_sys) begin
-	reg  old_access, old_mounted, old_reset;
+	io_state  <= io_state_n;
+	io_cp_ret <= io_cp_ret_n;
+	io_rw_ret <= io_rw_ret_n;
+end
 
-	io_state_t io_state, io_cp_ret, io_rw_ret;
+always @(posedge clk_sys) begin
+	reg  old_access, old_reset;
+	reg [2:0] old_mounted;
 
-	reg  [5:0] ack;
+
+	reg        old_ack;
 	reg        io_busy = 0;
 	reg        mounted = 0;
 	reg  [1:0] cp_virt;
 	reg [24:0] addr_r, addr_w, cp_len;
 	reg [15:0] SP, PSW, vaddr, error, total_size, part_size;
-	reg [31:0] hdd_start, hdd_end;
+	reg [31:0] disk_end;
 	reg  [7:0] disk;
 	reg        write;
 
@@ -276,7 +256,7 @@ always @(posedge clk_sys) begin
 		old_access <= reg_access;
 		if(!old_access && reg_access) begin 
 			processing <= 1;
-			io_state   <= stb670 ? ST_BIN : ST_PAR;
+			io_state_n <= stb670 ? ST_BIN : ST_PAR;
 			SP         <= bus_din;
 			copy_rd    <= 0;
 			copy_we    <= 0;
@@ -295,8 +275,8 @@ always @(posedge clk_sys) begin
 			copy_we    <= 0;
 		end
 
-		ack <= {sd_ack, ack[5:1]};
-		if(ack[0] && !ack[1]) begin
+		old_ack <= sd_ack;
+		if(old_ack & ~sd_ack) begin
 			if(conf) begin
 				mounted <= ((hdd_sig == "BKHD") && (hdd_ver == 1));
 				conf    <= 1'b0;
@@ -304,7 +284,7 @@ always @(posedge clk_sys) begin
 			io_busy <= 0;
 		end
 
-		if(!ack[0] && ack[1]) begin
+		if(~old_ack & sd_ack) begin
 			sd_wr <= 0;
 			sd_rd <= 0;
 		end
@@ -315,59 +295,59 @@ always @(posedge clk_sys) begin
 					begin
 						copy_addr <= addr_r;
 						copy_rd   <= 0;
-						io_state  <= io_state.next();
+						io_state_n<= io_state.next();
 					end
 				ST_R2,
 				ST_R3:
 					begin
 						copy_rd   <= 1;
-						io_state  <= io_state.next();
+						io_state_n<= io_state.next();
 					end
 				ST_R4:
 					begin
 						copy_rd   <= 0;
 						addr_r    <= addr_r + 2'd2;
-						io_state  <= io_rw_ret;
-						io_rw_ret <= io_rw_ret.next();
+						io_state_n<= io_rw_ret;
+						io_rw_ret_n<= io_rw_ret.next();
 					end
 
 				ST_W:
 					begin
 						copy_addr <= addr_w;
 						copy_we   <= 0;
-						io_state  <= io_state.next();
+						io_state_n<= io_state.next();
 					end
 				ST_W2,
 				ST_W3:
 					begin
 						copy_we   <= 1;
-						io_state  <= io_state.next();
+						io_state_n<= io_state.next();
 					end
 				ST_W4:
 					begin
 						copy_we   <= 0;
 						addr_w    <= addr_w + 2'd2;
-						io_state  <= io_rw_ret;
-						io_rw_ret <= io_rw_ret.next();
+						io_state_n<= io_rw_ret;
+						io_rw_ret_n<= io_rw_ret.next();
 					end
 
 				ST_CP_R2V:
 					begin
 						cp_virt   <= 2'b01;
-						io_state  <= ST_CP;
+						io_state_n<= ST_CP;
 					end
 				ST_CP_V2R:
 					begin
 						cp_virt   <= 2'b10;
-						io_state  <= ST_CP;
+						io_state_n<= ST_CP;
 					end
 
 				ST_CP:
 					begin
-						if(!cp_len) io_state <= io_cp_ret;
+						if(!cp_len) io_state_n <= io_cp_ret;
 						else begin
-							io_state <= ST_R;
-							io_rw_ret<= io_state.next();
+							io_state_n <= ST_R;
+							io_rw_ret_n<= io_state.next();
 						end
 						cp_len    <= cp_len - 1'd1;
 						copy_virt <= cp_virt[1];
@@ -376,22 +356,22 @@ always @(posedge clk_sys) begin
 					begin
 						copy_virt <= cp_virt[0];
 						copy_dout <= copy_din;
-						io_state  <= ST_W;
-						io_rw_ret <= ST_CP;
+						io_state_n<= ST_W;
+						io_rw_ret_n<= ST_CP;
 					end
 
 				ST_PAR:
 					begin
 						copy_virt <= 1;
 						addr_r    <= SP+16'd6;
-						io_state  <= ST_R;
-						io_rw_ret <= io_state.next();
+						io_state_n<= ST_R;
+						io_rw_ret_n<= io_state.next();
 					end
 				ST_PAR2:
 					begin
 						// R3 - address of paramters
 						addr_r    <= copy_din + 16'o34;
-						io_state  <= ST_R;
+						io_state_n<= ST_R;
 					end
 				ST_PAR3:
 					begin
@@ -399,14 +379,13 @@ always @(posedge clk_sys) begin
 						disk      <= copy_din[7:0];
 						hdr_addr  <= 7'd2 + copy_din[6:0];
 						addr_r    <= SP;
-						io_state  <= ST_R;
+						io_state_n<= ST_R;
 					end
 				ST_PAR4:
 					begin
 						// R0 - start block
-						lba       <= disk ? hdr_out + copy_din : copy_din;
-						hdd_start <= hdr_out;
-						io_state  <= ST_R;
+						lba       <= (disk>=2) ? hdr_out + copy_din : copy_din;
+						io_state_n<= ST_R;
 					end
 				ST_PAR5:
 					begin
@@ -414,22 +393,22 @@ always @(posedge clk_sys) begin
 						write     <= copy_din[15];
 						total_size<= copy_din[15] ? (~copy_din[15:0])+1'd1 : copy_din[15:0];
 						hdr_addr  <= hdr_addr + 1'd1;
-						io_state  <= ST_R;
+						io_state_n<= ST_R;
 					end
 				ST_PAR6:
 					begin
 						// R2 - address of buffer
 						vaddr     <= copy_din;
-						hdd_end   <= hdr_out;
+						disk_end  <= (disk>=2) ? (mounted ? hdr_out : 0) : disk_size[disk[0]];
 						addr_r    <= SP+16'd8;
-						io_state  <= ST_R;
+						io_state_n<= ST_R;
 					end
 				ST_PAR7:
 					begin
 						// PSW to return the status
 						PSW       <= copy_din;
 						addr_r    <= 16'o52;
-						io_state  <= ST_R;
+						io_state_n<= ST_R;
 					end
 				ST_PAR8:
 					begin
@@ -437,63 +416,37 @@ always @(posedge clk_sys) begin
 						addr_w    <= vaddr;
 						addr_r    <= vaddr;
 
-						if(disk) begin
-							//VHD access
-							if((bus_addr != 16'o177132) || !mounted || !hdd_end || !hdd_start || (disk >= 125)) begin
-								error[7:0] <= 6;
-								PSW[0]     <= 1;
-								io_state   <= ST_RES;
-							end else if(!total_size || vaddr[0]) begin
-								error[7:0] <= 10;
-								PSW[0]     <= 1;
-								io_state   <= ST_RES;
-							end else if((lba+((total_size+255) >> 8)) > hdd_end) begin
-								error[7:0] <= 5;
-								PSW[0]     <= 1;
-								io_state   <= ST_RES;
-							end else 
-								if(write) io_state <= ST_HW; // write
-									else   io_state <= ST_HR; // read
-
-						end else begin
-							//DSK access
-							if((bus_addr != 16'o177132) || write || !fdd_ready || !fdd_size) begin
-								error[7:0] <= 6;
-								PSW[0]     <= 1;
-								io_state   <= ST_RES;
-							end else if(!total_size || vaddr[0]) begin
-								error[7:0] <= 10;
-								PSW[0]     <= 1;
-								io_state   <= ST_RES;
-							end else if((lba+((total_size+255) >> 8)) > (fdd_size >> 9)) begin
-								error[7:0] <= 5;
-								PSW[0]     <= 1;
-								io_state   <= ST_RES;
-							end else begin 
-								lba        <= (lba << 9) + 32'h120000;
-								io_state   <= ST_FR; // read
-							end
-						end
+						if((bus_addr != 16'o177132) || !disk_end || (disk >= 125)) begin
+							error[7:0] <= 6;
+							PSW[0]     <= 1;
+							io_state_n <= ST_RES;
+						end else if(!total_size || vaddr[0]) begin
+							error[7:0] <= 10;
+							PSW[0]     <= 1;
+							io_state_n <= ST_RES;
+						end else if((lba+((total_size+255) >> 8)) > disk_end) begin
+							error[7:0] <= 5;
+							PSW[0]     <= 1;
+							io_state_n <= ST_RES;
+						end else if((disk<2) && write && disk_readonly[disk[0]]) begin
+							error[7:0] <= 1;
+							PSW[0]     <= 1;
+							io_state_n <= ST_RES;
+						end else 
+							if(write) io_state_n<= ST_HW; // write
+								else   io_state_n<= ST_HR; // read
 					end
 
-				// Floppy read
-				ST_FR:
-					begin
-						addr_r       <= lba[24:0];
-						cp_len       <= total_size;
-						io_state     <= ST_CP_R2V;
-						io_cp_ret    <= ST_RES_OK;
-					end
-
-				// HDD read
+				// Disk read
 				ST_HR:
 					begin
 						if(!io_busy) begin
 							bk_wr     <= 0;
-							sd_rd     <= 1;
+							if(disk>=2) sd_rd <= 1;
+							else sd_rd <= (3'b010 << disk);
 							io_busy   <= 1;
 							part_size <= (total_size < 16'd256) ? total_size : 16'd256;
-							io_state  <= io_state.next();
+							io_state_n<= io_state.next();
 						end
 					end
 				ST_HR2:
@@ -501,80 +454,81 @@ always @(posedge clk_sys) begin
 						if(!io_busy) begin
 							bk_addr   <= 0;
 							total_size<= total_size - part_size;
-							io_state  <= io_state.next();
+							io_state_n<= io_state.next();
 						end
 					end
 				ST_HR3:
 					begin
 						copy_virt    <= 1;
 						copy_dout    <= bk_ram_out;
-						io_state     <= ST_W;
-						io_rw_ret    <= io_state.next();
+						io_state_n   <= ST_W;
+						io_rw_ret_n  <= io_state.next();
 					end
 				ST_HR4:
 					begin
 						bk_addr      <= bk_addr + 2'd1;
 						part_size    <= part_size - 2'd1;
-						io_state     <= io_state.next();
+						io_state_n   <= io_state.next();
 					end
 				ST_HR5:
 					begin
-						if(part_size != 0) io_state <= ST_HR3;
+						if(part_size != 0) io_state_n <= ST_HR3;
 						else if(total_size != 0) begin 
 							lba       <= lba + 1;
-							io_state  <= ST_HR;
+							io_state_n<= ST_HR;
 						end else begin
-							io_state  <= ST_RES_OK;
+							io_state_n<= ST_RES_OK;
 						end
 					end
 
-				// HDD write
+				// Disk write
 				ST_HW:
 					begin
 						if(!io_busy) begin
 							bk_wr     <= 0;
 							bk_addr   <= 0;
 							part_size <= (total_size < 16'd256) ? total_size : 16'd256;
-							io_state  <= io_state.next();
+							io_state_n<= io_state.next();
 						end
 					end
 				ST_HW2:
 					begin
 						total_size   <= total_size - part_size;
-						io_state     <= io_state.next();
+						io_state_n   <= io_state.next();
 					end
 				ST_HW3:
 					begin
 						copy_virt    <= 1;
 						bk_wr        <= 0;
-						io_state     <= ST_R;
-						io_rw_ret    <= io_state.next();
+						io_state_n   <= ST_R;
+						io_rw_ret_n  <= io_state.next();
 					end
 				ST_HW4:
 					begin
 						bk_data_wr   <= copy_din;
 						part_size    <= part_size - 2'd1;
-						io_state     <= io_state.next();
+						io_state_n   <= io_state.next();
 					end
 				ST_HW5: begin
 						bk_wr        <= 1;
-						io_state     <= io_state.next();
+						io_state_n   <= io_state.next();
 					end
 				ST_HW6: begin
 						bk_wr        <= 0;
-						io_state     <= io_state.next();
+						io_state_n   <= io_state.next();
 					end
 				ST_HW7: begin
 						bk_addr      <= bk_addr + 2'd1;
-						io_state     <= io_state.next();
-						if(part_size != 0) io_state <= ST_HW3;
+						io_state_n   <= io_state.next();
+						if(part_size != 0) io_state_n<= ST_HW3;
 					end
 				ST_HW8:
 					begin
 						if(!io_busy) begin
-							sd_wr     <= 1;
+							if(disk>=2) sd_wr <= 1;
+							else sd_wr <= (3'b010 << disk);
 							io_busy   <= 1;
-							io_state  <= io_state.next();
+							io_state_n<= io_state.next();
 						end
 					end
 				ST_HW9:
@@ -582,9 +536,9 @@ always @(posedge clk_sys) begin
 						if(!io_busy) begin
 							if(total_size != 0) begin 
 								lba    <= lba + 1;
-								io_state <= ST_HW;
+								io_state_n<= ST_HW;
 							end else begin
-								io_state <= ST_RES_OK;
+								io_state_n<= ST_RES_OK;
 							end
 						end
 					end
@@ -594,7 +548,7 @@ always @(posedge clk_sys) begin
 					begin
 						error[7:0]   <= 0;
 						PSW[0]       <= 0;
-						io_state     <= ST_RES;
+						io_state_n   <= ST_RES;
 					end
 
 				// Finish. Post the exit code.
@@ -603,14 +557,14 @@ always @(posedge clk_sys) begin
 						copy_virt    <= 1;
 						copy_dout    <= error;
 						addr_w       <= 16'o52;
-						io_state     <= ST_W;
-						io_rw_ret    <= io_state.next();
+						io_state_n   <= ST_W;
+						io_rw_ret_n  <= io_state.next();
 					end
 				ST_RES2:
 					begin
 						copy_dout    <= PSW;
 						addr_w       <= SP+16'd8;
-						io_state     <= ST_W;
+						io_state_n   <= ST_W;
 					end
 				ST_RES3:
 					begin
@@ -624,29 +578,29 @@ always @(posedge clk_sys) begin
 						copy_virt    <= 1;
 						copy_dout    <= tape_addr;
 						addr_w       <= SP;
-						io_state     <= ST_W;
-						io_rw_ret    <= io_state.next();
+						io_state_n   <= ST_W;
+						io_rw_ret_n  <= io_state.next();
 					end
 				ST_BIN2:
 					begin
 						// start address after EMT 36
 						copy_dout    <= tape_addr;
 						addr_w       <= 16'o264;
-						io_state     <= ST_W;
+						io_state_n   <= ST_W;
 					end
 				ST_BIN3:
 					begin
 						// length after EMT 36
 						copy_dout    <= tape_len;
-						io_state     <= ST_W;
+						io_state_n   <= ST_W;
 					end
 				ST_BIN4:
 					begin
 						addr_r       <= 25'h100004;
 						addr_w       <= tape_addr;
 						cp_len       <= tape_len[15:1];
-						io_state     <= ST_CP_R2V;
-						io_cp_ret    <= io_state.next();
+						io_state_n   <= ST_CP_R2V;
+						io_cp_ret_n  <= io_state.next();
 					end
 				ST_BIN5:
 					begin
@@ -657,7 +611,7 @@ always @(posedge clk_sys) begin
 	end
 
 	if(!io_busy) begin
-		if(!old_mounted && sd_mounted) begin
+		if(!old_mounted[0] && img_mounted[0]) begin
 			mounted    <= 0;
 			conf       <= 1;
 			sd_rd      <= 1;
@@ -668,8 +622,90 @@ always @(posedge clk_sys) begin
 			copy_rd    <= 0;
 			copy_we    <= 0;
 		end
-		old_mounted <= sd_mounted;
+
+		if(!old_mounted[1] && img_mounted[1]) {disk_readonly[0], disk_size[0]} <= {img_readonly, img_size};
+		if(!old_mounted[2] && img_mounted[2]) {disk_readonly[1], disk_size[1]} <= {img_readonly, img_size};
+
+		old_mounted <= img_mounted;
 	end
+
+	if(reset_full) {disk_size[0],disk_size[1],disk_readonly} <= 0;
 end
 
+endmodule
+
+module sector_w2d
+(
+	input	        clock,
+
+	input	  [8:0] wraddress,
+	input	  [7:0] data,
+	input	        wren,
+
+	input	  [6:0] rdaddress,
+	output [31:0] q
+);
+
+mixed_width_dpram #(.WORDS(128), .WW(8), .RW(32)) ram(.*);
+
+endmodule
+
+
+module sector_w2w
+(
+	input	        clock,
+
+	input	  [8:0] wraddress,
+	input	  [7:0] data,
+	input	        wren,
+
+	input	  [7:0] rdaddress,
+	output [15:0] q
+);
+
+mixed_width_dpram #(.WORDS(256), .WW(8), .RW(16)) ram(.*);
+
+endmodule
+
+
+module mixed_width_dpram
+#(
+	parameter WORDS = 256,
+	parameter RW    = 8,
+	parameter WW    = 32
+)
+(
+	input clock,
+	input wren, 
+
+	input [$clog2((RW < WW) ? WORDS : (WORDS * RW)/WW) - 1 : 0] wraddress, 
+	input [$clog2((RW < WW) ? (WORDS * WW)/RW : WORDS) - 1 : 0] rdaddress, 
+
+	input        [WW-1:0] data, 
+	output logic [RW-1:0] q
+);
+   
+localparam int R = (RW < WW) ? WW/RW : RW/WW;
+localparam int B = (RW < WW) ? RW: WW;
+
+logic [R-1:0][B-1:0] ram[0:WORDS-1];
+
+generate if(RW < WW) begin
+	// Smaller read?
+	always_ff@(posedge clock)
+	begin
+		if(wren) ram[wraddress] <= data;
+		q <= ram[rdaddress / R][rdaddress % R];
+	end
+end
+else begin 
+	// Smaller write?
+	always_ff@(posedge clock)
+	begin
+		if(wren) ram[wraddress / R][wraddress % R] <= data;
+		q <= ram[rdaddress];
+	end
+end 
+endgenerate
+   
 endmodule

@@ -226,17 +226,19 @@ wire        no_csync;
 wire [31:0] status;
 
 wire [31:0] sd_lba;
-wire        sd_rd;
-wire        sd_wr;
-wire        sd_ack;
+wire  [2:0] sd_rd;
+wire  [2:0] sd_wr;
+wire  [2:0] sd_ack;
 wire        sd_ack_conf;
-wire        sd_conf;
-wire        sd_sdhc;
+wire        sd_conf = 1'b0;
+wire        sd_sdhc = 1'b1;
 wire  [8:0] sd_buff_addr;
 wire  [7:0] sd_buff_dout;
 wire  [7:0] sd_buff_din;
 wire        sd_buff_wr;
-wire        sd_mounted;
+wire  [2:0] img_mounted;
+wire        img_readonly = 0;
+wire [63:0] img_size;
 
 `ifdef USE_HDMI
 wire        i2c_start;
@@ -253,8 +255,9 @@ wire        i2c_end;
 localparam CONF_STR = 
 {
 	"BK0011M;;",
-	"F,BINDSK,FDD(A);",
-	"S0U,VHD,HDD(A);",
+	"S1U,DSKBKD,Mount FDD(A);",
+	"S2U,DSKBKD,Mount FDD(B);",
+	"S0U,VHD,Mount HDD;",
 	"O78,Scandoubler Fx,None,CRT 25%,CRT 50%,CRT 75%;",
 	"O1,CPU Speed,3MHz/4MHz,6MHz/8MHz;",
 	"O56,Model,BK0011M & DSK,BK0010 & DSK,BK0011M,BK0010;",
@@ -264,7 +267,7 @@ localparam CONF_STR =
 
 wire  [1:0] st_scanlines = status[8:7];
 
-user_io #(.STRLEN($size(CONF_STR)>>3), .SD_IMAGES(2), .FEATURES(32'h0 | (BIG_OSD << 13) | (HDMI << 14))) user_io
+user_io #(.STRLEN($size(CONF_STR)>>3), .SD_IMAGES(3), .FEATURES(32'h0 | (BIG_OSD << 13) | (HDMI << 14))) user_io
 (
 	.conf_str	(CONF_STR),
 	.clk_sys		(clk_sys),
@@ -299,12 +302,12 @@ user_io #(.STRLEN($size(CONF_STR)>>3), .SD_IMAGES(2), .FEATURES(32'h0 | (BIG_OSD
 
 	.sd_conf				(sd_conf),
 	.sd_sdhc				(sd_sdhc),
-	.img_mounted			(sd_mounted),
-	.img_size			(),
+	.img_mounted			(img_mounted),
+	.img_size			(img_size),
 	.sd_lba				(sd_lba),
 	.sd_rd				(sd_rd),
 	.sd_wr				(sd_wr),
-	.sd_ack				(sd_ack),
+	.sd_ack_x			(sd_ack),
 	.sd_ack_conf		(sd_ack_conf),
 	.sd_buff_addr		(sd_buff_addr),
 	.sd_dout				(sd_buff_dout),
@@ -783,6 +786,28 @@ assign HDMI_PCLK = clk_vid;
 `endif
 
 //////////////////////////   DISK, TAPE   /////////////////////////////
+wire        ioctl_download;
+wire        ioctl_wr;
+wire [24:0] ioctl_addr;
+wire [15:0] ioctl_dout;
+wire  [7:0] ioctl_index;
+
+data_io #(.DOUT_16(1'b1)) data_io (
+	.clk_sys		(clk_sys),
+
+	.SPI_SCK		(SPI_SCK),
+	.SPI_SS2		(SPI_SS2),
+	.SPI_SS4		(SPI_SS4),
+	.SPI_DI		(SPI_DI),
+	.SPI_DO		(SPI_DO),
+
+	.ioctl_download	(ioctl_download),
+	.ioctl_index		(ioctl_index),
+	.ioctl_wr			(ioctl_wr),
+	.ioctl_addr			(ioctl_addr),
+	.ioctl_dout			(ioctl_dout)
+);
+
 wire        disk_ack;
 wire        reset_req;
 wire        dsk_copy;
@@ -793,18 +818,6 @@ wire [15:0] dsk_copy_dout;
 wire        dsk_copy_we;
 wire        dsk_copy_rd;
 
-disk disk(
-	.*,
-
-	.SPI_SCK		(SPI_SCK),
-	.SPI_SS2		(SPI_SS2),
-	.SPI_SS4		(SPI_SS4),
-	.SPI_DO		(SPI_DO),
-	.SPI_DI		(SPI_DI),
-
-	.reset(cpu_dclo),
-	.reset_full(status[2]),
-	.bus_ack(disk_ack)
-);
+disk disk(.*, .img_size(img_size[40:9]), .reset(cpu_dclo), .reset_full(status[2]), .bus_ack(disk_ack), .sd_ack(|sd_ack));
 
 endmodule
